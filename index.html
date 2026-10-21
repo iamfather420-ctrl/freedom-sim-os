@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Freedom SIM OS</title>
+<link rel="manifest" href="manifest.json" />
+<style>
+  :root {
+    --bg: #0b0c0a;
+    --panel: #141612ee;
+    --ink: #ebe6d6;
+    --muted: #9a937f;
+    --line: #2c2e26;
+    --gold: #e0b15a;
+    --green: #b6d48a;
+    --cyan: #8fd0c4;
+    --red: #e15b4c;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  #boot {
+    position: fixed; inset: 0; background: #070806; z-index: 30;
+    display: flex; align-items: flex-end; padding: 36px;
+  }
+  #boot.hide { display: none; }
+  #boot pre { margin: 0; color: var(--green); font-family: var(--mono); font-size: 13px; line-height: 1.6; }
+  #desk { display: none; height: 100%; grid-template-rows: 48px 1fr 56px; }
+  #desk.on { display: grid; }
+  header, footer {
+    display: flex; align-items: center; gap: 10px; padding: 0 12px;
+    background: #10120e; border-color: var(--line); border-style: solid;
+  }
+  header { border-bottom-width: 1px; }
+  footer { border-top-width: 1px; }
+  .brand { font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em; color: var(--gold); }
+  .pill { font-family: var(--mono); font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 99px; padding: 3px 8px; }
+  .spacer { flex: 1; }
+  #windows { position: relative; overflow: hidden; background:
+    radial-gradient(900px 420px at 15% 0%, #1c2214 0%, transparent 55%),
+    linear-gradient(#12140f, #0b0c0a); }
+  .win {
+    position: absolute; width: min(760px, calc(100% - 28px)); height: min(520px, calc(100% - 28px));
+    left: 24px; top: 20px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; display: none; flex-direction: column; backdrop-filter: blur(8px);
+    box-shadow: 0 18px 50px #0008;
+  }
+  .win.on { display: flex; }
+  .win.head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); cursor: grab; }
+  .win.head b { font-size: 13px; font-weight: 600; }
+  .win.head button { margin-left: auto; background: transparent; border: 0; color: var(--muted); }
+  .win.body { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
+  .dock button, .ghost, .go {
+    background: #1b1e16; border: 1px solid var(--line); color: var(--ink); border-radius: 8px; padding: 8px 10px;
+  }
+  .dock button.on { border-color: var(--gold); color: var(--gold); }
+  .go { background: var(--gold); color: #21180a; border: 0; font-weight: 650; }
+  #term, textarea, .field, select {
+    width: 100%; background: #0c0d0a; border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+    font-family: var(--mono); font-size: 13px;
+  }
+  #term { height: 280px; overflow: auto; white-space: pre-wrap; }
+  .u { color: var(--gold); } .o { color: var(--green); } .e { color: var(--red); } .s { color: var(--cyan); }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  th, td { text-align: left; padding: 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  .muted { color: var(--muted); line-height: 1.45; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  .grow { flex: 1; }
+  #cmd { flex: 1; background: #0c0d0a; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-family: var(--mono); }
+  kbd { font-family: var(--mono); color: var(--gold); }
+</style>
+</head>
+<body>
+<div id="boot"><pre id="bootlog"></pre></div>
+<div id="desk">
+  <header>
+    <div class="brand">FREEDOM SIM OS</div>
+    <span class="pill" id="nodepill">node</span>
+    <span class="pill" id="hbpill">header</span>
+    <span class="spacer"></span>
+    <span class="pill" id="peerpill">0 peers</span>
+  </header>
+  <div id="windows"></div>
+  <footer>
+    <input id="cmd" placeholder="help, ls, write /note.txt hello, run /apps/demo.job" />
+    <button class="go" id="run" type="button">Run</button>
+    <span class="spacer"></span>
+    <div class="dock" id="dock"></div>
+  </footer>
+</div>
+<script>
+const KEY = "freedom-sim-os-v2";
+const APPS = [
+  ["console", "Console"],
+  ["files", "Disk"],
+  ["jobs", "Jobs"],
+  ["identity", "Identity"],
+  ["mesh", "Mesh"],
+  ["ingest", "Ingest"],
+  ["hardware", "Hardware"],
+  ["builder", "Builder"]
+];
+const state = load();
+const peers = new Map();
+const channel = "BroadcastChannel" in window ? new BroadcastChannel("freedom-sim-os") : null;
+let z = 2;
+let drag = null;
+
+function load() {
+  const base = {
+    nodeId: "sim-" + Math.random().toString(16).slice(2, 10),
+    files: {
+      "/readme.txt": "Local shell. Disk is localStorage. Jobs are intent records. Mesh is other tabs.",
+      "/apps/demo.job": "write /var/demo.txt ran demo\nls /"
+    },
+    jobs: [],
+    pub: null,
+    created: null
+  };
+  try { return Object.assign(base, JSON.parse(localStorage.getItem(KEY) || "null") || {}); }
+  catch (e) { return base; }
+}
+function save() {
+  localStorage.setItem(KEY, JSON.stringify({
+    nodeId: state.nodeId, files: state.files, jobs: state.jobs.slice(0, 50),
+    pub: state.pub, created: state.created
+  }));
+  paintChrome();
+}
+function seed() { return Math.floor(Date.now() / 27000); }
+function classify(s) {
+  s = s.toLowerCase();
+  if (/analy|compare|audit/.test(s)) return "ANALYZE";
+  if (/write|delete|rm |set |generate|burn|ingest/.test(s)) return "CONFIG";
+  if (/status|ls|cat|ps|who|mesh|files/.test(s)) return "STATE";
+  if (/run|ping|export|sign/.test(s)) return "EXECUTE";
+  return "QUERY";
+}
+function lines(cls, text) {
+  const box = document.querySelector("#term");
+  if (!box) return;
+  const d = document.createElement("div");
+  d.className = cls;
+  d.textContent = text;
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+}
+function remember(intent, input, result) {
+  state.jobs.unshift({ id: (state.jobs[0]?.id || 0) + 1, intent, input: input.slice(0, 90), result: String(result).split("\n")[0].slice(0, 110), at: new Date().toISOString().slice(11, 19) });
+  state.jobs = state.jobs.slice(0, 50);
+}
+
+function exec(raw, echo = true) {
+  const input = raw.trim();
+  if (!input) return "";
+  if (echo) lines("u", "› " + input);
+  const intent = classify(input);
+  const [cmd, a1, ...rest] = input.split(/\s+/);
+  let out = "";
+  try {
+    if (cmd === "help") out = "ls [prefix]\ncat <path>\nwrite <path> <text>\nrm <path>\nps\nidentity\nidentity new\nmesh\nping\nstatus\nrun <path>\nburn\nexport";
+    else if (cmd === "ls") {
+      const p = a1 || "/";
+      out = Object.keys(state.files).filter(f => f.startsWith(p)).sort().join("\n") || "(empty)";
+    } else if (cmd === "cat") {
+      if (state.files[a1] == null) throw new Error("no such file");
+      out = state.files[a1];
+    } else if (cmd === "write") {
+      if (!a1 || !a1.startsWith("/")) throw new Error("path must start with /");
+      const text = input.slice(input.indexOf(a1) + a1.length).trim();
+      state.files[a1] = text;
+      out = "wrote " + a1 + " (" + text.length + ")";
+    } else if (cmd === "rm") {
+      if (state.files[a1] == null) throw new Error("no such file");
+      delete state.files[a1];
+      out = "removed " + a1;
+    } else if (cmd === "ps") out = state.jobs.slice(0, 10).map(j => j.id + "  " + j.intent + "  " + j.input).join("\n") || "(none)";
+    else if (cmd === "identity" && a1 === "new") {
+      genId().then(pub => lines("o", "root stored\n" + pub.slice(0, 80) + "…"));
+      out = "generating P-256 root";
+    } else if (cmd === "identity") out = state.pub ? state.nodeId + "\n" + state.pub : "no root — identity new";
+    else if (cmd === "mesh") out = [...peers.values()].map(p => p.id + "  header " + p.header).join("\n") || "(open this page in another tab)";
+    else if (cmd === "ping") { announce("ping"); out = "ping sent"; }
+    else if (cmd === "status") out = ["node " + state.nodeId, "files " + Object.keys(state.files).length, "jobs " + state.jobs.length, "peers " + peers.size, "header " + seed(), "vault " + (state.pub ? "present" : "empty")].join("\n");
+    else if (cmd === "run") {
+      if (state.files[a1] == null) throw new Error("no such job file");
+      out = "running " + a1;
+      if (echo) lines("s", out);
+      state.files[a1].split("\n").forEach(line => { if (line.trim()) exec(line, true); });
+      remember(intent, input, out);
+      save();
+      refreshOpen();
+      return out;
+    } else if (cmd === "burn") { burn(); out = "local vault and disk reset"; }
+    else if (cmd === "export") { download(); out = "manifest downloaded"; }
+    else if (/show files|list files/.test(input.toLowerCase())) out = Object.keys(state.files).sort().join("\n");
+    else if (/who am i|identity/.test(input.toLowerCase())) out = state.pub ? "root " + state.nodeId : "no root";
+    else out = "No handler. Intent " + intent + ". Type help.";
+    if (echo) lines(out.startsWith("No handler") ? "e" : "o", out);
+    remember(intent, input, out);
+  } catch (err) {
+    out = err.message;
+    if (echo) lines("e", out);
+    remember(intent, input, out);
+  }
+  save();
+  refreshOpen();
+  return out;
+}
+
+async function genId() {
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const jwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
+  state.pub = JSON.stringify({ kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y });
+  state.created = new Date().toISOString();
+  state._priv = pair.privateKey;
+  save();
+  refreshOpen();
+  return state.pub;
+}
+async function signHeader() {
+  if (!state._priv) return "Generate a root this session. The private key is not stored.";
+  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, state._priv, new TextEncoder().encode(state.nodeId + ":" + seed()));
+  return [...new Uint8Array(sig)].slice(0, 24).map(b => b.toString(16).padStart(2, "0")).join("") + "…";
+}
+function burn() {
+  state.files = { "/readme.txt": "Burned in this browser. Disk reset." };
+  state.pub = null;
+  state.created = null;
+  state._priv = null;
+  save();
+}
+function manifest() {
+  const shape = document.querySelector("#kshape")?.value || "hybrid";
+  const stations = [...document.querySelectorAll("#stations input:checked")].map(n => n.value);
+  return { kind: "freedom-sim-image", note: "Manifest only. Not bootable.", nodeId: state.nodeId, kernel: shape, stations, header: seed(), pubkey: state.pub, files: state.files, exported: new Date().toISOString() };
+}
+function download() {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(manifest(), null, 2)], { type: "application/json" }));
+  a.download = "freedom-sim-image.json";
+  a.click();
+}
+function announce(kind) {
+  if (channel) channel.postMessage({ kind, id: state.nodeId, t: Date.now(), header: seed() });
+}
+function hardware() {
+  const m = navigator.deviceMemory ? navigator.deviceMemory + " GB reported" : "not reported";
+  return [
+    ["cores", navigator.hardwareConcurrency || "unknown"],
+    ["memory", m],
+    ["storage", "localStorage vault"],
+    ["crypto", crypto.subtle ? "WebCrypto" : "missing"],
+    ["mesh", channel ? "BroadcastChannel" : "unavailable"],
+    ["target in sketch", "ARM SC300 / 32KB — not this machine"]
+  ];
+}
+
+function el(tag, attrs, children) {
+  const n = document.createElement(tag);
+  Object.entries(attrs || {}).forEach(([k, v]) => {
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v);
+  });
+  (children || []).forEach(c => n.append(c.nodeType ? c : document.createTextNode(c)));
+  return n;
+}
+function win(id, title, body) {
+  let w = document.getElementById("win-" + id);
+  if (!w) {
+    w = el("section", { class: "win", id: "win-" + id });
+    const head = el("div", { class: "head" }, [el("b", {}, [title]), el("button", { type: "button", onclick: () => closeWin(id) }, ["close"])]);
+    head.addEventListener("pointerdown", ev => {
+      if (ev.target.tagName === "BUTTON") return;
+      drag = { id, dx: ev.clientX - w.offsetLeft, dy: ev.clientY - w.offsetTop };
+    });
+    w.append(head, el("div", { class: "body" }));
+    document.getElementById("windows").append(w);
+  }
+  w.querySelector(".body").replaceChildren(body);
+  w.classList.add("on");
+  w.style.zIndex = ++z;
+  document.querySelectorAll(".dock button").forEach(b => b.classList.toggle("on", b.dataset.app === id && w.classList.contains("on")));
+}
+function closeWin(id) {
+  document.getElementById("win-" + id)?.classList.remove("on");
+  document.querySelector('[data-app="' + id + '"]')?.classList.remove("on");
+}
+function openApp(id) {
+  if (id === "console") return consoleApp();
+  if (id === "files") return filesApp();
+  if (id === "jobs") return jobsApp();
+  if (id === "identity") return idApp();
+  if (id === "mesh") return meshApp();
+  if (id === "ingest") return ingestApp();
+  if (id === "hardware") return hwApp();
+  if (id === "builder") return buildApp();
+}
+function consoleApp() {
+  const box = el("div", { id: "term" });
+  box.append(el("div", { class: "s" }, ["shell ready — help"]));
+  win("console", "Console", box);
+}
+function filesApp() {
+  const table = el("table");
+  table.append(el("tr", {}, [el("th", {}, ["path"]), el("th", {}, ["bytes"]), el("th", {}, [""])]));
+  Object.keys(state.files).sort().forEach(path => {
+    const open = el("button", { class: "ghost", type: "button", onclick: () => editFile(path) }, ["edit"]);
+    table.append(el("tr", {}, [el("td", {}, [path]), el("td", {}, [String(state.files[path].length)]), el("td", {}, [open])]));
+  });
+  const path = el("input", { class: "field grow", id: "newpath", value: "/note.txt" });
+  const add = el("button", { class: "go", type: "button", onclick: () => editFile(path.value) }, ["Open"]);
+  win("files", "Disk", el("div", {}, [el("p", { class: "muted" }, ["Paths are keys in localStorage."]), table, el("div", { class: "row" }, [path, add])]));
+}
+function editFile(path) {
+  const area = el("textarea", { id: "editor" }, []);
+  area.value = state.files[path] || "";
+  area.style.height = "240px";
+  const saveBtn = el("button", { class: "go", type: "button", onclick: () => { state.files[path] = area.value; save(); filesApp(); lines("o", "wrote " + path); } }, ["Save"]);
+  win("files", path, el("div", {}, [area, el("div", { class: "row" }, [saveBtn])]));
+}
+function jobsApp() {
+  const table = el("table");
+  table.append(el("tr", {}, ["id", "intent", "when", "input", "result"].map(h => el("th", {}, [h]))));
+  state.jobs.slice(0, 16).forEach(j => table.append(el("tr", {}, [j.id, j.intent, j.at, j.input, j.result].map(v => el("td", {}, [String(v)])))));
+  win("jobs", "Jobs", table);
+}
+function idApp() {
+  const box = el("p", { class: "muted" }, [state.pub || "No root yet. Generation stays in this tab."]);
+  const sig = el("p", { class: "muted", id: "sig" }, [""]);
+  const gen = el("button", { class: "go", type: "button", onclick: () => genId().then(() => idApp()) }, ["Generate root"]);
+  const sign = el("button", { class: "ghost", type: "button", onclick: () => signHeader().then(s => { sig.textContent = s; }) }, ["Sign header"]);
+  win("identity", "Identity", el("div", {}, [el("p", {}, [state.nodeId]), box, el("div", { class: "row" }, [gen, sign]), sig]));
+}
+function meshApp() {
+  const table = el("table");
+  table.append(el("tr", {}, [el("th", {}, ["peer"]), el("th", {}, ["header"])]));
+  const list = [...peers.values()];
+  if (!list.length) table.append(el("tr", {}, [el("td", { colspan: "2" }, ["No peers. Open this same page in another tab."])]));
+  list.forEach(p => table.append(el("tr", {}, [el("td", {}, [p.id]), el("td", {}, [String(p.header)])])));
+  const ping = el("button", { class: "ghost", type: "button", onclick: () => { announce("ping"); meshApp(); } }, ["Ping"]);
+  win("mesh", "Mesh", el("div", {}, [table, el("div", { class: "row" }, [ping])]));
+}
+function ingestApp() {
+  const name = el("input", { class: "field", id: "jobname", value: "/apps/task.job" });
+  const area = el("textarea", {}, []);
+  area.value = "status\nls /";
+  area.style.height = "160px";
+  const saveBtn = el("button", { class: "go", type: "button", onclick: () => { state.files[name.value] = area.value; save(); exec("run " + name.value); } }, ["Save and run"]);
+  win("ingest", "Ingest", el("div", {}, [el("p", { class: "muted" }, ["A job file is a list of shell lines. Ingest stores it, then runs it."]), name, area, el("div", { class: "row" }, [saveBtn])]));
+}
+function hwApp() {
+  const table = el("table");
+  hardware().forEach(([k, v]) => table.append(el("tr", {}, [el("td", {}, [k]), el("td", {}, [String(v)])])));
+  win("hardware", "Hardware", el("div", {}, [el("p", { class: "muted" }, ["This panel reports the browser you are in. It does not claim a SIM."]), table]));
+}
+function buildApp() {
+  const shape = el("select", { id: "kshape", class: "field" }, []);
+  [["hybrid", "Hybrid"], ["microkernel", "Microkernel"], ["monolithic", "Monolithic"]].forEach(([v, l]) => {
+    const o = el("option", { value: v }, [l]);
+    shape.append(o);
+  });
+  const stations = el("div", { id: "stations" });
+  APPS.forEach(([id, label]) => {
+    const cb = el("input", { type: "checkbox", value: id });
+    cb.checked = true;
+    stations.append(el("label", { class: "muted" }, [cb, " " + label]));
+  });
+  const go = el("button", { class: "go", type: "button", onclick: download }, ["Download manifest"]);
+  win("builder", "Builder", el("div", {}, [el("p", { class: "muted" }, ["Exports the current disk and these choices. Not an ISO."]), shape, stations, el("div", { class: "row" }, [go])]));
+}
+function refreshOpen() {
+  ["files", "jobs", "mesh", "identity"].forEach(id => {
+    if (document.getElementById("win-" + id)?.classList.contains("on")) openApp(id);
+  });
+}
+function paintChrome() {
+  document.getElementById("nodepill").textContent = state.nodeId;
+  document.getElementById("hbpill").textContent = "header " + seed();
+  document.getElementById("peerpill").textContent = peers.size + " peers";
+}
+document.getElementById("dock").append(...APPS.map(([id, label]) => el("button", { type: "button", "data-app": id, onclick: () => openApp(id) }, [label])));
+document.getElementById("run").onclick = () => {
+  openApp("console");
+  exec(document.getElementById("cmd").value);
+  document.getElementById("cmd").value = "";
+};
+document.getElementById("cmd").addEventListener("keydown", ev => { if (ev.key === "Enter") document.getElementById("run").click(); });
+window.addEventListener("pointermove", ev => {
+  if (!drag) return;
+  const w = document.getElementById("win-" + drag.id);
+  w.style.left = (ev.clientX - drag.dx) + "px";
+  w.style.top = (ev.clientY - drag.dy) + "px";
+});
+window.addEventListener("pointerup", () => { drag = null; });
+if (channel) channel.onmessage = ev => {
+  const m = ev.data || {};
+  if (!m.id || m.id === state.nodeId) return;
+  peers.set(m.id, { id: m.id, header: m.header, seen: Date.now() });
+  if (m.kind === "hello" || m.kind === "ping") announce("ack");
+  paintChrome();
+};
+setInterval(() => {
+  for (const [id, p] of peers) if (Date.now() - p.seen > 20000) peers.delete(id);
+  paintChrome();
+  announce("beat");
+}, 5000);
+
+const boot = ["Freedom SIM OS", "disk localStorage", "scheduler local", "mesh BroadcastChannel", "crypto WebCrypto P-256", "node " + state.nodeId, "ready"];
+const log = document.getElementById("bootlog");
+let i = 0;
+const timer = setInterval(() => {
+  log.textContent += boot[i++] + "\n";
+  if (i >= boot.length) {
+    clearInterval(timer);
+    setTimeout(() => {
+      document.getElementById("boot").classList.add("hide");
+      document.getElementById("desk").classList.add("on");
+      openApp("console");
+      openApp("hardware");
+      document.getElementById("win-hardware").style.left = "300px";
+      announce("hello");
+      paintChrome();
+    }, 350);
+  }
+}, 120);
+</script>
+</body>
+</html>
